@@ -173,13 +173,14 @@ Cap methods
 
 * **(constructor)**() - Creates and returns a new Cap instance.
 
-* **open**(< _string_ >device, < _string_ >filter, < _integer_ >bufSize, < _Buffer_ >buffer) - _(void)_ - Opens `device` and starts capturing packets using `filter`. `bufSize` is the size of the internal buffer that libpcap uses to temporarily store packets until they are emitted. `buffer` is a Buffer large enough to store one packet. If open() is called again without a previous call to close(), an implicit close() will occur first.
+* **open**(< _string_ >device, < _string_ >filter, < _integer_ >bufSize, < _Buffer_ >buffer) - _(void)_ - Opens `device` and starts capturing packets using `filter`. To see the syntax for `filter` check [`pcap-filter` man page](http://www.tcpdump.org/manpages/pcap-filter.7.html). `bufSize` is the size of the internal buffer that libpcap uses to temporarily store packets until they are emitted. `buffer` is a Buffer large enough to store one packet. If open() is called again without a previous call to close(), an implicit close() will occur first.
 
 * **close**() - _(void)_ - Stops capturing.
 
-* **setMinBytes**(< _integer_ >nBytes) - _(void) - **(Windows ONLY)** This sets the minimum number of packet bytes that must be captured before the full packet data is made available. If this value is set too high, you may not receive any packets until WinPCap's internal buffer fills up. Therefore it's generally best to pass in 0 to this function after calling open(), despite it resulting in more syscalls.
+* **setMinBytes**(< _integer_ >nBytes) - _(void)_ - **(Windows ONLY)** This sets the minimum number of packet bytes that must be captured before the full packet data is made available. If this value is set too high, you may not receive any packets until WinPCap's internal buffer fills up. Therefore it's generally best to pass in 0 to this function after calling open(), despite it resulting in more syscalls.
 
-* **send**(< _Buffer_ >buffer, < _integer_ > bytesToSend) - (integer) Sends an arbitrary packet on the connected `device`.  bytesToSend is optional and defaults to the buffer's length.
+* **send**(< _Buffer_ >buffer[, < _integer_ >nBytes]) - _(void)_ - Sends an arbitrary, raw packet on the opened device. `nBytes` is the number of bytes in `buffer` to send (starting from position 0) and defaults to `buffer.length`.
+
 
 Cap static methods
 ------------------
