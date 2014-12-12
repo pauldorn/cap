@@ -5,6 +5,7 @@
 #include <string.h>
 
 #ifdef _WIN32
+/*
 void ListIpAddresses(IpAddresses& ipAddrs)
 {
   IP_ADAPTER_ADDRESSES* adapter_addresses(NULL);
@@ -124,7 +125,7 @@ void ListIpAddresses(IpAddresses& ipAddrs)
 
   // Cheers!
 }
-
+*/
 # define snprintf _snprintf
   const char* inet_ntop(int af, const void* src, char* dst, int cnt) {
     struct sockaddr_storage sa;
