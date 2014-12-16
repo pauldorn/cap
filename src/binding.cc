@@ -5,6 +5,8 @@
 //#include <stdlib.h>
 
 #ifdef _WIN32
+#include <Iphlpapi.h>
+#pragma comment(lib, "IPHLPAPI.lib")
 
 # define snprintf _snprintf
   const char* inet_ntop(int af, const void* src, char* dst, int cnt) {
@@ -541,8 +543,74 @@ class Pcap : public ObjectWrap {
     }
 };
 
+void setAdapterAddress(PIP_ADAPTER_INFO pAdapterInfo, sockaddr *sockaddr, char* name, Local<Object> address) {
+    unsigned int i;
+    Local<Object> temp = Object::New();
+    PIP_ADAPTER_INFO pAdapterWalk = pAdapterInfo;
+    PIP_ADDR_STRING addressList;
+    SetAddrStringHelper("addr", sockaddr, temp);
+    String::Utf8Value str(temp->Get(String::New("addr"))->ToString());
+    char *c_addr = *str;
+    char hwAddr[19];
+    bool found = false;
+//   printf("IP we are looking for: %s\n", c_addr);
+
+    while(pAdapterWalk ) {
+    addressList = &pAdapterWalk->IpAddressList;
+//    printf("Adapter Name: %s\n", pAdapterWalk->AdapterName);
+//    printf("Adapter Desc: %s\n", pAdapterWalk->Description);
+//    printf("Tick %d\n", pAdapterWalk->AddressLength);
+    if(pAdapterWalk->AddressLength == 0) {
+        return;
+    }
+        while(addressList ) {
+//            printf("Address %s\n", addressList->IpAddress);
+            if(strcmp(c_addr, addressList->IpAddress.String) == 0) {
+                found = true;
+            }
+            addressList = addressList->Next;
+        }
+        if(found) {
+            sprintf( hwAddr, "%.2X-%.2X-%.2X-%.2X-%.2X-%.2X", (int) pAdapterWalk->Address[0], (int) pAdapterWalk->Address[1],
+                (int) pAdapterWalk->Address[2], (int) pAdapterWalk->Address[3], (int) pAdapterWalk->Address[4], (int) pAdapterWalk->Address[5]);
+            address->Set(String::New("mac"), String::New(hwAddr));
+        }
+//        for (i = 0; i < pAdapterWalk->AddressLength; i++) {
+//                if (i == (pAdapterWalk->AddressLength - 1))
+//                    printf("%.2X\n", (int) pAdapterWalk->Address[i]);
+//                else
+//                    printf("%.2X-", (int) pAdapterWalk->Address[i]);
+//            }
+//        }
+
+   //     printf("Compare address [%s]\n", pAdapterWalk->CurrentIpAddress->IpAddress);
+    /*
+            if (strncmp((const char*)&pAdapterWalk->CurrentIpAddress->IpAddress, c_addr, 15) == 0) {
+            char name4[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET,
+                pAdapterWalk->Address,
+                name4, INET_ADDRSTRLEN);
+
+            address->Set(String::New("mac"), String::New(name4));
+            return;
+        } else {
+            pAdapterWalk = pAdapterWalk->Next;
+        }
+        */
+        pAdapterWalk = pAdapterWalk->Next;
+    }
+
+    return;
+//     inet_ntop(AF_INET6,
+//        (char*)&(((struct sockaddr_in6*)(sockaddr->addr))->sin6_addr),
+//        name6, INET6_ADDRSTRLEN);
+}
+
 static Handle<Value> ListDevices(const Arguments& args) {
   HandleScope scope;
+  PIP_ADAPTER_INFO pAdapterInfo;
+  PIP_ADAPTER_INFO pAdapterWalk;
+  unsigned long pAdapterInfoLength = 0;
 
   char errbuf[PCAP_ERRBUF_SIZE];
   pcap_if_t *alldevs = NULL, *cur_dev;
@@ -554,8 +622,20 @@ static Handle<Value> ListDevices(const Arguments& args) {
   Local<Array> DevsArray;
   Local<Array> AddrArray;
 
-  if (pcap_findalldevs(&alldevs, errbuf) == -1)
+  if (pcap_findalldevs(&alldevs, errbuf) == -1) {
     return ThrowException(Exception::Error(String::New(errbuf)));
+  }
+    // pAdapterInfo is ignored here.  The length is 0 so the function will set the length to the size we need to allocate
+  if( ERROR_BUFFER_OVERFLOW != GetAdaptersInfo(NULL, &pAdapterInfoLength)) {
+    return ThrowException(Exception::Error(String::New("GetAdaptersInfo failed to report structure size.")));
+  }
+  pAdapterInfo = (PIP_ADAPTER_INFO) malloc(pAdapterInfoLength);
+
+  if(pAdapterInfo == NULL) {
+    return ThrowException(Exception::Error(String::New("Failed to allocate adapter info structure.")));
+  }
+
+  GetAdaptersInfo(pAdapterInfo, &pAdapterInfoLength);
 
   DevsArray = Array::New();
 
@@ -574,10 +654,14 @@ static Handle<Value> ListDevices(const Arguments& args) {
     for (j = 0, cur_addr = cur_dev->addresses;
          cur_addr != NULL;
          cur_addr = cur_addr->next) {
+      pAdapterWalk = pAdapterInfo;
       if (cur_addr->addr) {
         af = cur_addr->addr->sa_family;
         if (af == AF_INET || af == AF_INET6) {
+
           Address = Object::New();
+          setAdapterAddress(pAdapterWalk, cur_addr->addr, "mac", Address);
+//          printf("Back from setAdapterAddress\n");
           SetAddrStringHelper("addr", cur_addr->addr, Address);
           SetAddrStringHelper("netmask", cur_addr->netmask, Address);
           SetAddrStringHelper("broadaddr", cur_addr->broadaddr, Address);
@@ -586,7 +670,7 @@ static Handle<Value> ListDevices(const Arguments& args) {
         }
       }
     }
-      
+
     Dev->Set(String::New("addresses"), AddrArray);
 
     if (cur_dev->flags & PCAP_IF_LOOPBACK)
@@ -598,13 +682,14 @@ static Handle<Value> ListDevices(const Arguments& args) {
   if (alldevs)
     pcap_freealldevs(alldevs);
 
+  free(pAdapterInfo);
   return scope.Close(DevsArray);
 }
 
 static Handle<Value> FindDevice(const Arguments& args) {
   HandleScope scope;
-
   Local<Value> ret;
+
   char errbuf[PCAP_ERRBUF_SIZE];
   char name4[INET_ADDRSTRLEN];
   char name6[INET6_ADDRSTRLEN];
@@ -613,8 +698,9 @@ static Handle<Value> FindDevice(const Arguments& args) {
   pcap_addr_t *addr;
   bool found = false;
 
-  if (pcap_findalldevs(&alldevs, errbuf) == -1)
+  if (pcap_findalldevs(&alldevs, errbuf) == -1) {
     return ThrowException(Exception::Error(String::New(errbuf)));
+  }
 
   if (args.Length() > 0) { 
     if (!args[0]->IsString()) {
