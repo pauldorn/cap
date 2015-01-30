@@ -483,8 +483,14 @@ class Pcap : public ObjectWrap {
       // Set "timeout" on read, even though we are also setting nonblock below.
       // On Linux this is required.
       if (pcap_set_timeout(obj->pcap_handle, 1) != 0) {
+             return ThrowException(
+               Exception::Error(String::New("Unable to set read timeout"))
+             );
+           }
+
+      if (pcap_set_immediate_mode(obj->pcap_handle, 1) != 0) {
         return ThrowException(
-          Exception::Error(String::New("Unable to set read timeout"))
+          Exception::Error(String::New("Unable to set immediate mode"))
         );
       }
 
