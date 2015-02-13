@@ -166,8 +166,8 @@ class Pcap : public ObjectWrap {
     }
 
 #ifdef _WIN32
-    static void cb_packets(uv_async_t* handle, int status) {
-      assert(status == 0);
+    static void cb_packets(uv_async_t* handle) {
+      //assert(status == 0);
       Pcap *obj = (Pcap*) handle->data;
       int packet_count;
 
@@ -390,7 +390,7 @@ class Pcap : public ObjectWrap {
 
       int r;
 #ifdef _WIN32
-      r = uv_async_init(uv_default_loop(), &obj->async, (uv_async_cb)cb_packets);
+      r = uv_async_init(uv_default_loop(), &obj->async, cb_packets);
       assert(r == 0);
       obj->async.data = obj;
       r = RegisterWaitForSingleObject(
