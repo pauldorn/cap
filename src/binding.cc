@@ -6,8 +6,6 @@
 #include <string.h>
 
 #ifdef _WIN32
-#include <Iphlpapi.h>
-#pragma comment(lib, "IPHLPAPI.lib")
 # define snprintf _snprintf
   const char* inet_ntop(int af, const void* src, char* dst, int cnt) {
     struct sockaddr_storage sa;
@@ -59,7 +57,6 @@ using namespace v8;
 static Persistent<FunctionTemplate> constructor;
 static Persistent<String> emit_symbol;
 static Persistent<String> packet_symbol;
-static Persistent<String> close_symbol;
 
 void SetAddrStringHelper(const char* key,
                          sockaddr *addr,
@@ -91,7 +88,6 @@ class Pcap : public ObjectWrap {
 
 #ifdef _WIN32
     HANDLE wait;
-    //uv_mutex_t mutex;
     uv_async_t async;
 #else
     uv_poll_t poll_handle;
@@ -123,7 +119,6 @@ class Pcap : public ObjectWrap {
           UnregisterWait(wait);
           wait = NULL;
         }
-        //uv_mutex_destroy(&mutex);
         uv_close((uv_handle_t*)&async, cb_close);
 #else
         uv_poll_stop(&poll_handle);
@@ -174,29 +169,16 @@ class Pcap : public ObjectWrap {
       assert(status == 0);
       Pcap *obj = (Pcap*) handle->data;
       int packet_count;
-
-      //uv_mutex_lock(&obj->mutex);
       do {
         packet_count = pcap_dispatch(obj->pcap_handle, 1, Pcap::EmitPacket,
                                      (u_char*)obj);
       } while (packet_count > 0);
-      //uv_mutex_unlock(&obj->mutex);
     }
     static void CALLBACK OnPacket(void* data, BOOLEAN didTimeout) {
       assert(!didTimeout);
       uv_async_t* async = (uv_async_t*) data;
       int r = uv_async_send(async);
       assert(r == 0);
-    }
-    static void cb_close(uv_handle_t* handle) {
-      /*HandleScope scope;
-      Pcap *obj = (Pcap*) handle->data;
-      TryCatch try_catch;
-      Handle<Value> emit_argv[1] = { close_symbol };
-      obj->Emit->Call(obj->handle_, 1, emit_argv);
-      if (try_catch.HasCaught())
-        FatalException(try_catch);
-      */
     }
 #else
     static void cb_packets(uv_poll_t* handle, int status, int events) {
@@ -407,8 +389,6 @@ class Pcap : public ObjectWrap {
       r = uv_async_init(uv_default_loop(), &obj->async, cb_packets);
       assert(r == 0);
       obj->async.data = obj;
-      //r = uv_mutex_init(&obj->mutex);
-      //assert(r == 0);
       r = RegisterWaitForSingleObject(
         &obj->wait,
         pcap_getevent(obj->pcap_handle),
@@ -489,7 +469,6 @@ class Pcap : public ObjectWrap {
 
       NanAssignPersistent(emit_symbol, NanNew<String>("emit"));
       NanAssignPersistent(packet_symbol, NanNew<String>("packet"));
-      NanAssignPersistent(close_symbol, NanNew<String>("close"));
 
 
       target->Set(NanNew<String>("Cap"), tpl->GetFunction());
