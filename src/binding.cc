@@ -169,6 +169,7 @@ class Pcap : public ObjectWrap {
       assert(status == 0);
       Pcap *obj = (Pcap*) handle->data;
       int packet_count;
+
       do {
         packet_count = pcap_dispatch(obj->pcap_handle, 1, Pcap::EmitPacket,
                                      (u_char*)obj);
@@ -179,6 +180,8 @@ class Pcap : public ObjectWrap {
       uv_async_t* async = (uv_async_t*) data;
       int r = uv_async_send(async);
       assert(r == 0);
+    }
+    static void cb_close(uv_handle_t* handle) {
     }
 #else
     static void cb_packets(uv_poll_t* handle, int status, int events) {
@@ -213,7 +216,7 @@ class Pcap : public ObjectWrap {
           NanNew<Object>(obj->persistent())->Get(NanNew<String>(emit_symbol))
 #endif
         )
-                  );
+      );
 
       NanReturnValue(args.This());
     }
@@ -228,14 +231,13 @@ class Pcap : public ObjectWrap {
 
       if (!Buffer::HasInstance(args[0]))
         return NanThrowTypeError("first parameter must be a buffer");
-        if (args.Length() >= 2) {
+      if (args.Length() >= 2) {
         if (!args[1]->IsUint32())
           return NanThrowTypeError("length must be a positive integer");
           buffer_size = args[1]->Uint32Value();
         }
-      } else {
-        return NanThrowTypeError("the first parameter must be a buffer");
       }
+      
 #if NODE_MAJOR_VERSION == 0 && NODE_MINOR_VERSION < 10
       Local<Object> buffer_obj = args[0]->ToObject();
 #else
