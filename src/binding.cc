@@ -235,9 +235,8 @@ class Pcap : public ObjectWrap {
         if (!args[1]->IsUint32())
           return NanThrowTypeError("length must be a positive integer");
           buffer_size = args[1]->Uint32Value();
-        }
       }
-      
+
 #if NODE_MAJOR_VERSION == 0 && NODE_MINOR_VERSION < 10
       Local<Object> buffer_obj = args[0]->ToObject();
 #else
@@ -283,6 +282,8 @@ class Pcap : public ObjectWrap {
 
       if (!Buffer::HasInstance(args[3]))
         return NanThrowTypeError("buffer must be a Buffer");
+
+
       String::Utf8Value device(args[0]->ToString());
       String::Utf8Value filter(args[1]->ToString());
       int buffer_size = args[2]->Int32Value();
@@ -471,7 +472,6 @@ class Pcap : public ObjectWrap {
 
       NanAssignPersistent(emit_symbol, NanNew<String>("emit"));
       NanAssignPersistent(packet_symbol, NanNew<String>("packet"));
-
 
       target->Set(NanNew<String>("Cap"), tpl->GetFunction());
     }
