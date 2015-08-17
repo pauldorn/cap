@@ -231,10 +231,11 @@ class Pcap : public ObjectWrap {
 
       if (!Buffer::HasInstance(args[0]))
         return NanThrowTypeError("first parameter must be a buffer");
+
       if (args.Length() >= 2) {
         if (!args[1]->IsUint32())
           return NanThrowTypeError("length must be a positive integer");
-          buffer_size = args[1]->Uint32Value();
+        buffer_size = args[1]->Uint32Value();
       }
 
 #if NODE_MAJOR_VERSION == 0 && NODE_MINOR_VERSION < 10
@@ -594,6 +595,7 @@ static NAN_METHOD(FindDevice) {
     pcap_freealldevs(alldevs);
   if (ip)
     free(ip);
+
   NanReturnValue(ret);
 }
 
