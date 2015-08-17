@@ -235,6 +235,7 @@ class Pcap : public ObjectWrap {
       if (args.Length() >= 2) {
         if (!args[1]->IsUint32())
           return NanThrowTypeError("length must be a positive integer");
+
         buffer_size = args[1]->Uint32Value();
       }
 
