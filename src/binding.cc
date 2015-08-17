@@ -1,13 +1,13 @@
-#include <string>
 #include <node.h>
 #include <node_buffer.h>
+#include <nan.h>
 #include <pcap/pcap.h>
-//#include <stdlib.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifdef _WIN32
 #include <Iphlpapi.h>
 #pragma comment(lib, "IPHLPAPI.lib")
-
 # define snprintf _snprintf
   const char* inet_ntop(int af, const void* src, char* dst, int cnt) {
     struct sockaddr_storage sa;
@@ -34,17 +34,29 @@
     }
     return dst;
   }
-
 #else
 # include <arpa/inet.h>
 # include <sys/ioctl.h>
-#include <string.h>
+#endif
+
+#if __linux__
+# include <dlfcn.h>
+  // Without immediate mode some architectures (e.g. Linux with TPACKET_V3)
+  // will buffer replies and potentially cause a *long* delay in packet
+  // reception
+
+  // pcap_set_immediate_mode is new as of libpcap 1.5.1, so we check for
+  // this new method dynamically ...
+  typedef void* (*set_immediate_fn)(pcap_t *p, int immediate);
+  void *_pcap_lib_handle = dlopen("libpcap.so", RTLD_LAZY);
+  set_immediate_fn set_immediate_mode =
+    (set_immediate_fn)(dlsym(_pcap_lib_handle, "pcap_set_immediate_mode"));
 #endif
 
 using namespace node;
 using namespace v8;
 
-static Persistent<FunctionTemplate> Pcap_constructor;
+static Persistent<FunctionTemplate> constructor;
 static Persistent<String> emit_symbol;
 static Persistent<String> packet_symbol;
 static Persistent<String> close_symbol;
@@ -67,9 +79,9 @@ void SetAddrStringHelper(const char* key,
     }
     const char* address = inet_ntop(addr->sa_family, src, dst_addr, size);
     if (address == NULL)
-      Address->Set(String::New(key), Undefined());
+      Address->Set(NanNew<String>(key), NanUndefined());
     else
-      Address->Set(String::New(key), String::New(address));
+      Address->Set(NanNew<String>(key), NanNew<String>(address));
   }
 }
 
@@ -101,8 +113,7 @@ class Pcap : public ObjectWrap {
 
     ~Pcap() {
       close();
-      Emit.Dispose();
-      Emit.Clear();
+      NanDisposePersistent(Emit);
     }
 
     bool close() {
@@ -130,7 +141,7 @@ class Pcap : public ObjectWrap {
     static void EmitPacket(u_char* user,
                            const struct pcap_pkthdr* pkt_hdr,
                            const u_char* pkt_data) {
-      HandleScope scope;
+      NanScope();
       Pcap *obj = (Pcap*) user;
 
       size_t copy_len = pkt_hdr->caplen;
@@ -141,15 +152,21 @@ class Pcap : public ObjectWrap {
       }
       memcpy(obj->buffer_data, pkt_data, copy_len);
 
-      TryCatch try_catch;
       Handle<Value> emit_argv[3] = {
-        packet_symbol,
-        Number::New(static_cast<double>(copy_len)),
-        Boolean::New(truncated)
+        NanNew<String>(packet_symbol),
+        NanNew<Number>(copy_len),
+        NanNew<Boolean>(truncated)
       };
-      obj->Emit->Call(obj->handle_, 3, emit_argv);
-      if (try_catch.HasCaught())
-        FatalException(try_catch);
+      NanMakeCallback(
+#if NODE_MAJOR_VERSION == 0 && NODE_MINOR_VERSION <= 10
+        obj->handle_,
+#else
+        NanNew<Object>(obj->persistent()),
+#endif
+        NanNew<Function>(obj->Emit),
+        3,
+        emit_argv
+      );
     }
 
 #ifdef _WIN32
@@ -196,55 +213,46 @@ class Pcap : public ObjectWrap {
     }
 #endif
 
-    static Handle<Value> New(const Arguments& args) {
-      HandleScope scope;
+    static NAN_METHOD(New) {
+      NanScope();
 
-      if (!args.IsConstructCall()) {
-        return ThrowException(Exception::TypeError(
-          String::New("Use `new` to create instances of this object"))
-        );
-      }
+      if (!args.IsConstructCall())
+        return NanThrowError("Use `new` to create instances of this object");
 
       Pcap *obj = new Pcap();
       obj->Wrap(args.This());
 
-      obj->Emit = Persistent<Function>::New(
-                    Local<Function>::Cast(obj->handle_->Get(emit_symbol))
+      NanAssignPersistent<Function>(
+        obj->Emit,
+        Local<Function>::Cast(
+#if NODE_MAJOR_VERSION == 0 && NODE_MINOR_VERSION <= 10
+          obj->handle_->Get(emit_symbol)
+#else
+          NanNew<Object>(obj->persistent())->Get(NanNew<String>(emit_symbol))
+#endif
+        )
                   );
 
-      return args.This();
+      NanReturnValue(args.This());
     }
 
-    static Handle<Value> Send(const Arguments& args) {
-      HandleScope scope;
+    static NAN_METHOD(Send) {
+      NanScope();
       Pcap *obj = ObjectWrap::Unwrap<Pcap>(args.This());
-      //unsigned int buffer_size = 0;
-      size_t buffer_size = 0;
+      unsigned int buffer_size = 0;
 
-      if (args.Length() >= 1) {
-        if (!Buffer::HasInstance(args[0])) {
-          return ThrowException(
-            Exception::TypeError(
-              String::New("first parameter must be a buffer")
-            )
-          );
-        }
+      if (args.Length() == 0)
+        return NanThrowTypeError("the first parameter must be a buffer");
+
+      if (!Buffer::HasInstance(args[0]))
+        return NanThrowTypeError("first parameter must be a buffer");
         if (args.Length() >= 2) {
-          if (!args[1]->IsUint32()) {
-            return ThrowException(
-              Exception::TypeError(
-                String::New("length must be a positive integer")
-              )
-            );
-          }
+        if (!args[1]->IsUint32())
+          return NanThrowTypeError("length must be a positive integer");
           buffer_size = args[1]->Uint32Value();
         }
       } else {
-        return ThrowException(
-          Exception::TypeError(
-            String::New("the first parameter must be a buffer")
-          )
-        );
+        return NanThrowTypeError("the first parameter must be a buffer");
       }
 #if NODE_MAJOR_VERSION == 0 && NODE_MINOR_VERSION < 10
       Local<Object> buffer_obj = args[0]->ToObject();
@@ -255,68 +263,42 @@ class Pcap : public ObjectWrap {
         buffer_size = Buffer::Length(buffer_obj);
       else {
         if (buffer_size > Buffer::Length(buffer_obj)) {
-          return ThrowException(
-            Exception::Error(
-              String::New("size must be smaller or equal to buffer length")
-            )
+          return NanThrowTypeError(
+            "size must be smaller or equal to buffer length"
           );
         }
       }
 
       if (pcap_sendpacket(obj->pcap_handle,
                           (const u_char*)Buffer::Data(buffer_obj),
-                          static_cast<int>(buffer_size)) == -1) {
-        return ThrowException(
-          Exception::Error(String::New(pcap_geterr(obj->pcap_handle)))
-        );
+                          buffer_size) == -1) {
+        return NanThrowError(pcap_geterr(obj->pcap_handle));
       }
 
-      return Undefined();
+      NanReturnUndefined();
     }
 
-    static Handle<Value> Open(const Arguments& args) {
-      HandleScope scope;
+    static NAN_METHOD(Open) {
+      NanScope();
       Pcap *obj = ObjectWrap::Unwrap<Pcap>(args.This());
 
       if (obj->pcap_handle)
         obj->close();
 
-      if (args.Length() >= 4) { 
-        if (!args[0]->IsString()) {
-          return ThrowException(
-            Exception::TypeError(
-              String::New("device must be a string")
-            )
-          );
-        }
-        if (!args[1]->IsString()) {
-          return ThrowException(
-            Exception::TypeError(
-              String::New("filter must be a string")
-            )
-          );
-        }
-        if (!args[2]->IsUint32()) {
-          return ThrowException(
-            Exception::TypeError(
-              String::New("bufSize must be a positive integer")
-            )
-          );
-        }
-        if (!Buffer::HasInstance(args[3])) {
-          return ThrowException(
-            Exception::TypeError(
-              String::New("buffer must be a Buffer")
-            )
-          );
-        }
-      } else {
-        return ThrowException(
-          Exception::TypeError(
-            String::New("Expecting 4 arguments")
-          )
-        );
-      }
+      if (args.Length() < 4)
+        return NanThrowTypeError("Expecting 4 arguments");
+
+      if (!args[0]->IsString())
+        return NanThrowTypeError("device must be a string");
+
+      if (!args[1]->IsString())
+        return NanThrowTypeError("filter must be a string");
+
+      if (!args[2]->IsUint32())
+        return NanThrowTypeError("bufSize must be a positive integer");
+
+      if (!Buffer::HasInstance(args[3]))
+        return NanThrowTypeError("buffer must be a Buffer");
       String::Utf8Value device(args[0]->ToString());
       String::Utf8Value filter(args[1]->ToString());
       int buffer_size = args[2]->Int32Value();
@@ -342,65 +324,43 @@ class Pcap : public ObjectWrap {
       obj->pcap_handle = pcap_create((char*)*device, errbuf);
 
       if (obj->pcap_handle == NULL)
-        return ThrowException(Exception::Error(String::New(errbuf)));
+        return NanThrowError(errbuf);
 
       // 64KB is the max IPv4 packet size
-      if (pcap_set_snaplen(obj->pcap_handle, 65535) != 0) {
-        return ThrowException(
-          Exception::Error(String::New("Unable to set snaplen"))
-        );
-      }
+      if (pcap_set_snaplen(obj->pcap_handle, 65535) != 0)
+        return NanThrowError("Unable to set snaplen");
 
       // Always use promiscuous mode
-      if (pcap_set_promisc(obj->pcap_handle, 1) != 0) {
-        return ThrowException(
-          Exception::Error(String::New("Unable to set promiscuous mode"))
-        );
-      }
+      if (pcap_set_promisc(obj->pcap_handle, 1) != 0)
+        return NanThrowError("Unable to set promiscuous mode");
 
       // Try to set buffer size. Sometimes the OS has a lower limit that it will
       // silently enforce.
-      if (pcap_set_buffer_size(obj->pcap_handle, buffer_size) != 0) {
-        return ThrowException(
-          Exception::Error(String::New("Unable to set buffer size"))
-        );
-      }
+      if (pcap_set_buffer_size(obj->pcap_handle, buffer_size) != 0)
+        return NanThrowError("Unable to set buffer size");
 
       // Set "timeout" on read, even though we are also setting nonblock below.
       // On Linux this is required.
-      if (pcap_set_timeout(obj->pcap_handle, 1) != 0) {
-             return ThrowException(
-               Exception::Error(String::New("Unable to set read timeout"))
-             );
-           }
+      if (pcap_set_timeout(obj->pcap_handle, 1000) != 0)
+        return NanThrowError("Unable to set read timeout");
 
-      if (pcap_set_immediate_mode(obj->pcap_handle, 1) != 0) {
-        return ThrowException(
-          Exception::Error(String::New("Unable to set immediate mode"))
-        );
-      }
+#if __linux__
+      if (set_immediate_mode != NULL)
+        set_immediate_mode(obj->pcap_handle, 1);
+#endif
 
-      if (pcap_activate(obj->pcap_handle) != 0) {
-        return ThrowException(
-          Exception::Error(String::New(pcap_geterr(obj->pcap_handle)))
-        );
-      }
+      if (pcap_activate(obj->pcap_handle) != 0)
+        return NanThrowError(pcap_geterr(obj->pcap_handle));
 
       if (pcap_setnonblock(obj->pcap_handle, 1, errbuf) == -1)
-        return ThrowException(Exception::Error(String::New(errbuf)));
+        return NanThrowError(errbuf);
 
       if (filter.length() != 0) {
-        if (pcap_compile(obj->pcap_handle, &fp, (char*)*filter, 1, net) == -1) {
-          return ThrowException(
-            Exception::Error(String::New(pcap_geterr(obj->pcap_handle)))
-          );
-        }
+        if (pcap_compile(obj->pcap_handle, &fp, (char*)*filter, 1, net) == -1)
+          return NanThrowError(pcap_geterr(obj->pcap_handle));
 
-        if (pcap_setfilter(obj->pcap_handle, &fp) == -1) {
-          return ThrowException(
-            Exception::Error(String::New(pcap_geterr(obj->pcap_handle)))
-          );
-        }
+        if (pcap_setfilter(obj->pcap_handle, &fp) == -1)
+          return NanThrowError(pcap_geterr(obj->pcap_handle));
 
         pcap_freecode(&fp);
       }
@@ -422,23 +382,23 @@ class Pcap : public ObjectWrap {
       Local<Value> ret;
       switch (link_type) {
         case DLT_NULL:
-          ret = String::New("NULL");
+          ret = NanNew<String>("NULL");
           break;
         case DLT_EN10MB: // most wifi interfaces pretend to be "ethernet"
-          ret =  String::New("ETHERNET");
+          ret =  NanNew<String>("ETHERNET");
           break;
         case DLT_IEEE802_11_RADIO: // 802.11 "monitor mode"
-          ret = String::New("IEEE802_11_RADIO");
+          ret = NanNew<String>("IEEE802_11_RADIO");
           break;
         case DLT_LINUX_SLL: // "Linux cooked-mode capture"
-          ret = String::New("LINKTYPE_LINUX_SLL");
+          ret = NanNew<String>("LINKTYPE_LINUX_SLL");
           break;
         case DLT_RAW: // "raw IP"
-          ret = String::New("RAW");
+          ret = NanNew<String>("RAW");
           break;
         default:
           snprintf(errbuf, PCAP_ERRBUF_SIZE, "Unknown linktype %d", link_type);
-          ret = String::New(errbuf);
+          ret = NanNew<String>(errbuf);
           break;
       }
 
@@ -468,7 +428,7 @@ class Pcap : public ObjectWrap {
                       (LPTSTR)&errmsg,
                       0,
                       NULL);
-        return ThrowException(Exception::Error(String::New(errmsg)));
+        return NanThrowError(errmsg);
       }
 #else
       obj->fd = pcap_get_selectable_fd(obj->pcap_handle);
@@ -480,143 +440,64 @@ class Pcap : public ObjectWrap {
 #endif
 
       obj->Ref();
-      return scope.Close(ret);
+      NanReturnValue(ret);
     }
 
 #ifdef _WIN32
-    static Handle<Value> WIN_SetMin(const Arguments& args) {
-      HandleScope scope;
+    static NAN_METHOD(WIN_SetMin) {
+      NanScope();
       Pcap *obj = ObjectWrap::Unwrap<Pcap>(args.This());
 
-      if (args.Length() < 1) {
-        return ThrowException(
-          Exception::Error(String::New("missing min bytes value"))
-        );
-      }
-      if (!args[0]->IsUint32()) {
-        return ThrowException(
-          Exception::TypeError(
-            String::New("min bytes must be a positive number")
-          )
-        );
-      }
+      if (args.Length() < 1)
+        return NanThrowTypeError("missing min bytes value");
 
-      if (obj->pcap_handle == NULL) {
-        return ThrowException(
-          Exception::Error(String::New("Not currently capturing/open"))
-        );
-      }
+      if (!args[0]->IsUint32())
+        return NanThrowTypeError("min bytes must be a positive number");
 
-      if (pcap_setmintocopy(obj->pcap_handle, args[0]->Uint32Value()) != 0) {
-        return ThrowException(
-          Exception::Error(String::New("Unable to set min bytes"))
-        );
-      }
+      if (obj->pcap_handle == NULL)
+        return NanThrowError("Not currently capturing/open");
 
-      return Undefined();
+      if (pcap_setmintocopy(obj->pcap_handle, args[0]->Uint32Value()) != 0)
+        return NanThrowError("Unable to set min bytes");
+
+      NanReturnUndefined();
     }
 #endif
 
-    static Handle<Value> Close(const Arguments& args) {
-      HandleScope scope;
+    static NAN_METHOD(Close) {
+      NanScope();
       Pcap *obj = ObjectWrap::Unwrap<Pcap>(args.This());
 
-      return scope.Close(Boolean::New(obj->close()));
+      NanReturnValue(NanNew<Boolean>(obj->close()));
     }
 
     static void Initialize(Handle<Object> target) {
-      HandleScope scope;
+      NanScope();
 
-      Local<FunctionTemplate> tpl = FunctionTemplate::New(New);
-      Local<String> name = String::NewSymbol("Cap");
+      Local<FunctionTemplate> tpl = NanNew<FunctionTemplate>(New);
 
-      Pcap_constructor = Persistent<FunctionTemplate>::New(tpl);
-      Pcap_constructor->InstanceTemplate()->SetInternalFieldCount(1);
-      Pcap_constructor->SetClassName(name);
+      NanAssignPersistent(constructor, tpl);
+      tpl->InstanceTemplate()->SetInternalFieldCount(1);
+      tpl->SetClassName(NanNew<String>("Cap"));
 
-      NODE_SET_PROTOTYPE_METHOD(Pcap_constructor, "send", Send);
-      NODE_SET_PROTOTYPE_METHOD(Pcap_constructor, "open", Open);
-      NODE_SET_PROTOTYPE_METHOD(Pcap_constructor, "close", Close);
+      NODE_SET_PROTOTYPE_METHOD(tpl, "send", Send);
+      NODE_SET_PROTOTYPE_METHOD(tpl, "open", Open);
+      NODE_SET_PROTOTYPE_METHOD(tpl, "close", Close);
 #ifdef _WIN32
-      NODE_SET_PROTOTYPE_METHOD(Pcap_constructor, "setMinBytes", WIN_SetMin);
+      NODE_SET_PROTOTYPE_METHOD(tpl, "setMinBytes", WIN_SetMin);
 #endif
 
-      emit_symbol = NODE_PSYMBOL("emit");
-      packet_symbol = NODE_PSYMBOL("packet");
-      close_symbol = NODE_PSYMBOL("close");
+      NanAssignPersistent(emit_symbol, NanNew<String>("emit"));
+      NanAssignPersistent(packet_symbol, NanNew<String>("packet"));
+      NanAssignPersistent(close_symbol, NanNew<String>("close"));
 
-      target->Set(name, Pcap_constructor->GetFunction());
+
+      target->Set(NanNew<String>("Cap"), tpl->GetFunction());
     }
 };
 
-void setAdapterAddress(PIP_ADAPTER_INFO pAdapterInfo, sockaddr *sockaddr, char* name, Local<Object> address) {
-    unsigned int i;
-    Local<Object> temp = Object::New();
-    PIP_ADAPTER_INFO pAdapterWalk = pAdapterInfo;
-    PIP_ADDR_STRING addressList;
-    SetAddrStringHelper("addr", sockaddr, temp);
-    String::Utf8Value str(temp->Get(String::New("addr"))->ToString());
-    char *c_addr = *str;
-    char hwAddr[19];
-    bool found = false;
-//   printf("IP we are looking for: %s\n", c_addr);
-
-    while(pAdapterWalk ) {
-    addressList = &pAdapterWalk->IpAddressList;
-//    printf("Adapter Name: %s\n", pAdapterWalk->AdapterName);
-//    printf("Adapter Desc: %s\n", pAdapterWalk->Description);
-//    printf("Tick %d\n", pAdapterWalk->AddressLength);
-    if(pAdapterWalk->AddressLength == 0) {
-        return;
-    }
-        while(addressList ) {
-//            printf("Address %s\n", addressList->IpAddress);
-            if(strcmp(c_addr, addressList->IpAddress.String) == 0) {
-                found = true;
-            }
-            addressList = addressList->Next;
-        }
-        if(found) {
-            sprintf( hwAddr, "%.2X-%.2X-%.2X-%.2X-%.2X-%.2X", (int) pAdapterWalk->Address[0], (int) pAdapterWalk->Address[1],
-                (int) pAdapterWalk->Address[2], (int) pAdapterWalk->Address[3], (int) pAdapterWalk->Address[4], (int) pAdapterWalk->Address[5]);
-            address->Set(String::New("mac"), String::New(hwAddr));
-        }
-//        for (i = 0; i < pAdapterWalk->AddressLength; i++) {
-//                if (i == (pAdapterWalk->AddressLength - 1))
-//                    printf("%.2X\n", (int) pAdapterWalk->Address[i]);
-//                else
-//                    printf("%.2X-", (int) pAdapterWalk->Address[i]);
-//            }
-//        }
-
-   //     printf("Compare address [%s]\n", pAdapterWalk->CurrentIpAddress->IpAddress);
-    /*
-            if (strncmp((const char*)&pAdapterWalk->CurrentIpAddress->IpAddress, c_addr, 15) == 0) {
-            char name4[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET,
-                pAdapterWalk->Address,
-                name4, INET_ADDRSTRLEN);
-
-            address->Set(String::New("mac"), String::New(name4));
-            return;
-        } else {
-            pAdapterWalk = pAdapterWalk->Next;
-        }
-        */
-        pAdapterWalk = pAdapterWalk->Next;
-    }
-
-    return;
-//     inet_ntop(AF_INET6,
-//        (char*)&(((struct sockaddr_in6*)(sockaddr->addr))->sin6_addr),
-//        name6, INET6_ADDRSTRLEN);
-}
-
-static Handle<Value> ListDevices(const Arguments& args) {
-  HandleScope scope;
-  PIP_ADAPTER_INFO pAdapterInfo;
-  PIP_ADAPTER_INFO pAdapterWalk;
-  unsigned long pAdapterInfoLength = 0;
+static NAN_METHOD(ListDevices) {
+  NanScope();
 
   char errbuf[PCAP_ERRBUF_SIZE];
   pcap_if_t *alldevs = NULL, *cur_dev;
@@ -628,74 +509,57 @@ static Handle<Value> ListDevices(const Arguments& args) {
   Local<Array> DevsArray;
   Local<Array> AddrArray;
 
-  if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-    return ThrowException(Exception::Error(String::New(errbuf)));
-  }
-    // pAdapterInfo is ignored here.  The length is 0 so the function will set the length to the size we need to allocate
-  if( ERROR_BUFFER_OVERFLOW != GetAdaptersInfo(NULL, &pAdapterInfoLength)) {
-    return ThrowException(Exception::Error(String::New("GetAdaptersInfo failed to report structure size.")));
-  }
-  pAdapterInfo = (PIP_ADAPTER_INFO) malloc(pAdapterInfoLength);
+  if (pcap_findalldevs(&alldevs, errbuf) == -1)
+    return NanThrowError(errbuf);
 
-  if(pAdapterInfo == NULL) {
-    return ThrowException(Exception::Error(String::New("Failed to allocate adapter info structure.")));
-  }
-
-  GetAdaptersInfo(pAdapterInfo, &pAdapterInfoLength);
-
-  DevsArray = Array::New();
+  DevsArray = NanNew<Array>();
 
   for (i = 0, cur_dev = alldevs;
        cur_dev != NULL;
        cur_dev = cur_dev->next, ++i) {
-    Dev = Object::New();
-    AddrArray = Array::New();
+    Dev = NanNew<Object>();
+    AddrArray = NanNew<Array>();
 
-    Dev->Set(String::New("name"), String::New(cur_dev->name));
+    Dev->Set(NanNew<String>("name"), NanNew<String>(cur_dev->name));
     if (cur_dev->description != NULL) {
-      Dev->Set(String::New("description"),
-               String::New(cur_dev->description));
+      Dev->Set(NanNew<String>("description"),
+               NanNew<String>(cur_dev->description));
     }
 
     for (j = 0, cur_addr = cur_dev->addresses;
          cur_addr != NULL;
          cur_addr = cur_addr->next) {
-      pAdapterWalk = pAdapterInfo;
       if (cur_addr->addr) {
         af = cur_addr->addr->sa_family;
         if (af == AF_INET || af == AF_INET6) {
-
-          Address = Object::New();
-          setAdapterAddress(pAdapterWalk, cur_addr->addr, "mac", Address);
-//          printf("Back from setAdapterAddress\n");
+          Address = NanNew<Object>();
           SetAddrStringHelper("addr", cur_addr->addr, Address);
           SetAddrStringHelper("netmask", cur_addr->netmask, Address);
           SetAddrStringHelper("broadaddr", cur_addr->broadaddr, Address);
           SetAddrStringHelper("dstaddr", cur_addr->dstaddr, Address);
-          AddrArray->Set(Integer::New(j++), Address);
+          AddrArray->Set(NanNew<Integer>(j++), Address);
         }
       }
     }
-
-    Dev->Set(String::New("addresses"), AddrArray);
+      
+    Dev->Set(NanNew<String>("addresses"), AddrArray);
 
     if (cur_dev->flags & PCAP_IF_LOOPBACK)
-      Dev->Set(String::New("flags"), String::New("PCAP_IF_LOOPBACK"));
+      Dev->Set(NanNew<String>("flags"), NanNew<String>("PCAP_IF_LOOPBACK"));
 
-    DevsArray->Set(Integer::New(i), Dev);
+    DevsArray->Set(NanNew<Integer>(i), Dev);
   }
 
   if (alldevs)
     pcap_freealldevs(alldevs);
 
-  free(pAdapterInfo);
-  return scope.Close(DevsArray);
+  NanReturnValue(DevsArray);
 }
 
-static Handle<Value> FindDevice(const Arguments& args) {
-  HandleScope scope;
-  Local<Value> ret;
+static NAN_METHOD(FindDevice) {
+  NanScope();
 
+  Local<Value> ret;
   char errbuf[PCAP_ERRBUF_SIZE];
   char name4[INET_ADDRSTRLEN];
   char name6[INET6_ADDRSTRLEN];
@@ -704,17 +568,13 @@ static Handle<Value> FindDevice(const Arguments& args) {
   pcap_addr_t *addr;
   bool found = false;
 
-  if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-    return ThrowException(Exception::Error(String::New(errbuf)));
-  }
+  if (pcap_findalldevs(&alldevs, errbuf) == -1)
+    return NanThrowError(errbuf);
 
   if (args.Length() > 0) { 
-    if (!args[0]->IsString()) {
-      return ThrowException(
-        Exception::Error(String::New("Expected string for IP"))
-      );
-    }
-    String::AsciiValue ipstr(args[0]->ToString());
+    if (!args[0]->IsString())
+      return NanThrowTypeError("Expected string for IP");
+    NanUtf8String ipstr(args[0]->ToString());
     ip = (char*)malloc(ipstr.length());
     strcpy(ip, *ipstr);
   }
@@ -739,7 +599,7 @@ static Handle<Value> FindDevice(const Arguments& args) {
                 continue;
             }
           }
-          ret = String::New(dev->name);
+          ret = NanNew<String>(dev->name);
           found = true;
           break;
         }
@@ -753,20 +613,18 @@ static Handle<Value> FindDevice(const Arguments& args) {
     pcap_freealldevs(alldevs);
   if (ip)
     free(ip);
-  return scope.Close(ret);
+  NanReturnValue(ret);
 }
 
 extern "C" {
   void init(Handle<Object> target) {
-    HandleScope scope;
+    NanScope();
     Pcap::Initialize(target);
-    target->Set(String::NewSymbol("findDevice"),
-                FunctionTemplate::New(FindDevice)->GetFunction());
-    target->Set(String::NewSymbol("deviceList"),
-                FunctionTemplate::New(ListDevices)->GetFunction());
+    target->Set(NanNew<String>("findDevice"),
+                NanNew<FunctionTemplate>(FindDevice)->GetFunction());
+    target->Set(NanNew<String>("deviceList"),
+                NanNew<FunctionTemplate>(ListDevices)->GetFunction());
   }
 
   NODE_MODULE(cap, init);
 }
-
-
