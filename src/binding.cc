@@ -165,7 +165,12 @@ class Pcap : public ObjectWrap {
     }
 
 #ifdef _WIN32
-    static void cb_packets(uv_async_t* handle, int status) {
+#if (NODE_MODULE_VERSION < NODE_0_12_MODULE_VERSION)
+    static void cb_packets(uv_poll_t* handle, int status) {
+      assert(status == 0);
+#else
+    static void cb_packets(uv_poll_t* handle) {
+#endif
       assert(status == 0);
       Pcap *obj = (Pcap*) handle->data;
       int packet_count;
@@ -184,7 +189,12 @@ class Pcap : public ObjectWrap {
     static void cb_close(uv_handle_t* handle) {
     }
 #else
+#if (NODE_MODULE_VERSION < NODE_0_12_MODULE_VERSION)
     static void cb_packets(uv_poll_t* handle, int status, int events) {
+      assert(status == 0);
+#else
+    static void cb_packets(uv_poll_t* handle) {
+#endif
       assert(status == 0);
       Pcap *obj = (Pcap*) handle->data;
 
