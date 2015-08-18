@@ -169,10 +169,10 @@ class Pcap : public ObjectWrap {
 
 #ifdef _WIN32
 #if (NODE_MODULE_VERSION < NODE_0_12_MODULE_VERSION)
-    static void cb_packets(uv_poll_t* handle, int status) {
+    static void cb_packets(uv_async_t* handle, int status) {
       assert(status == 0);
 #else
-    static void cb_packets(uv_poll_t* handle) {
+    static void cb_packets(uv_async_t* handle) {
 #endif
       assert(status == 0);
       Pcap *obj = (Pcap*) handle->data;
