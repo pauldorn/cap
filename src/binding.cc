@@ -1,3 +1,6 @@
+#ifdef _WIN32
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#endif
 #include <node.h>
 #include <node_buffer.h>
 #include <nan.h>
