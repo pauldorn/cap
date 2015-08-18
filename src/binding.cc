@@ -174,7 +174,6 @@ class Pcap : public ObjectWrap {
 #else
     static void cb_packets(uv_async_t* handle) {
 #endif
-      assert(status == 0);
       Pcap *obj = (Pcap*) handle->data;
       int packet_count;
 
