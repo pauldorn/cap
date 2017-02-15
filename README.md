@@ -4,13 +4,14 @@ Description
 
 A cross-platform binding for performing packet capturing with [node.js](http://nodejs.org/).
 
-This binding is tested on Windows and Linux.
+[![Build Status](https://travis-ci.org/mscdex/cap.svg)](https://travis-ci.org/mscdex/cap)
+[![Build status](https://ci.appveyor.com/api/projects/status/hypcya975yogcu9h)](https://ci.appveyor.com/project/mscdex/cap)
 
 
 Requirements
 ============
 
-* [node.js](http://nodejs.org/) -- v0.8.0 or newer
+* [node.js](http://nodejs.org/) -- v0.10.0 or newer
 
 * For Windows: [WinPcap](http://www.winpcap.org/install/default.htm)
 
