@@ -64,6 +64,10 @@ class Pcap : public Nan::ObjectWrap {
     Nan::Persistent<Function> Emit;
     bool closing;
     bool handling_packets;
+    unsigned int tv_sec;
+    unsigned int tv_usec;
+
+
 #ifdef _WIN32
     HANDLE wait;
     uv_async_t async;
@@ -84,6 +88,8 @@ class Pcap : public Nan::ObjectWrap {
       buffer_length = 0;
       closing = false;
       handling_packets = false;
+      tv_sec = 0;
+      tv_usec = 0;
       sendQueue = NULL;
 #ifdef _WIN32
       wait = NULL;
@@ -279,6 +285,7 @@ class Pcap : public Nan::ObjectWrap {
       unsigned int bytesSent = 0;
       bytesSent = pcap_sendqueue_transmit(obj->pcap_handle, obj->sendQueue, 0);
       if (bytesSent != sendSize) {
+        printf("Failed to send all packet data %d %d", bytesSent, sendSize);
         return Nan::ThrowError("Error: Some data not sent");
       } 
 
@@ -294,7 +301,7 @@ class Pcap : public Nan::ObjectWrap {
         return Nan::ThrowError("SendQueue called before AllocateSendQueue");
       }
 
-      if (info.Length() == 2) {
+      if (info.Length() >= 2) {
         if (!info[1]->IsUint32()) {
           return Nan::ThrowTypeError("First parameter is length (positive integer`)");
         }
@@ -316,13 +323,20 @@ class Pcap : public Nan::ObjectWrap {
           "size must be smaller or equal to buffer length"
         );
       }
-    
-      hdr.ts.tv_sec = 0;
-      hdr.ts.tv_usec = 0;
-      hdr.caplen =(int)packetLength;
-      hdr.len = (int)packetLength;
-
-      pcap_sendqueue_queue(obj->sendQueue, &hdr,  (const u_char*)(Buffer::Data(buffer_obj)));
+      obj->tv_usec += 1;
+      if (obj->tv_usec == 1000000) {
+        obj->tv_usec = 0;
+        obj->tv_sec += 1;
+      }
+      hdr.ts.tv_sec = obj->tv_sec;
+      hdr.ts.tv_usec = obj->tv_usec;
+      hdr.caplen =(unsigned int)packetLength;
+      hdr.len = (unsigned int)packetLength;
+      // const u_char* ptr = (const u_char*)(Buffer::Data(buffer_obj));
+      // printf("%03d %03d %03d %03d\n", ptr[38], ptr[39], ptr[40], ptr[41]);
+      if (pcap_sendqueue_queue(obj->sendQueue, &hdr,  (const u_char*)(Buffer::Data(buffer_obj)))) {
+        return Nan::ThrowError("Packet buffer too small");
+      }
 
     }
 
